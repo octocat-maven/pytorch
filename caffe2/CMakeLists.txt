@@ -5,6 +5,7 @@ include(../cmake/Codegen.cmake)
 
 # ---[ ATen build
 if (INTERN_BUILD_ATEN_OPS)
+  message(WARNING "NOT only building core")
   set(__caffe2_CMAKE_POSITION_INDEPENDENT_CODE ${CMAKE_POSITION_INDEPENDENT_CODE})
   set(CMAKE_POSITION_INDEPENDENT_CODE ON)
   set(AT_LINK_STYLE INTERFACE)
@@ -44,14 +45,6 @@ if (INTERN_BUILD_ATEN_OPS)
   list(APPEND Caffe2_CUDA_DEPENDENCY_LIBS ${ATen_CUDA_DEPENDENCY_LIBS})
   list(APPEND Caffe2_HIP_DEPENDENCY_LIBS ${ATen_HIP_DEPENDENCY_LIBS})
   list(APPEND Caffe2_DEPENDENCY_INCLUDE ${ATen_THIRD_PARTY_INCLUDE})
-else()
-  # Only add "ATen Core", a minimal, easy-to-compile fragment of ATen.
-  # This codepath should only be exercised by the Android build.
-  add_subdirectory(../aten/src/ATen/core ATen_core)
-  list(APPEND Caffe2_CPU_SRCS ${ATen_CORE_SRCS})
-  list(APPEND Caffe2_CPU_INCLUDE ${ATen_CORE_INCLUDE})
-  list(APPEND Caffe2_CPU_TEST_SRCS ${ATen_CORE_TEST_SRCS})
-  # See cmake/Codegen.cmake for header installation
 endif()
 
 # ---[ Caffe2 build
