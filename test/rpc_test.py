@@ -24,6 +24,10 @@ def my_function(a, b, c):
     return a + b + c
 
 
+def my_rref_function(rref_a, rref_b):
+    return rref_a.to_here() + rref_b.to_here()
+
+
 # it is used to test python user defined function over rpc
 def no_result():
     print("do nothing")
@@ -31,6 +35,41 @@ def no_result():
 
 def nested_rpc(dst):
     return dist.rpc_sync(dst, torch.add, args=(torch.ones(2, 2), 1))
+
+
+def nested_rref(dst):
+    return (
+        dist.remote(dst, torch.add, args=(torch.ones(2, 2), 1)),
+        dist.remote(dst, torch.add, args=(torch.ones(2, 2), 2))
+    )
+
+
+def nested_remote(dst):
+    rref = dist.remote(dst, torch.add, args=(torch.ones(2, 2), 3))
+    return rref.to_here()
+
+
+def rref_forward_chain(dst, world_size, rref, ttl):
+    if ttl > 0:
+        current_dst = 'worker{}'.format(dst)
+        next_dst = (dst + 1) % world_size
+        ret_rref = dist.remote(
+            current_dst,
+            rref_forward_chain,
+            args=(
+                next_dst,
+                world_size,
+                rref,
+                ttl - 1
+            )
+        )
+        return [ret_rref]
+    else:
+        return rref.to_here()
+
+
+def rpc_return_rref(dst):
+    return dist.remote(dst, torch.add, args=(torch.ones(2, 2), 1))
 
 
 def light_rpc():
@@ -109,29 +148,37 @@ class RpcTest(object):
     def test_worker_id(self):
         n = self.rank + 1
         peer_rank = n % self.world_size
-        self_worker_id = dist.get_worker_id()
-        peer_worker_id = dist.get_worker_id("worker{}".format(peer_rank))
+        self_worker_info = dist.get_worker_info()
+        peer_worker_info = dist.get_worker_info('worker{}'.format(peer_rank))
 
-        self.assertEqual(self_worker_id.name, "worker{}".format(self.rank))
-        self.assertEqual(peer_worker_id.name, "worker{}".format(peer_rank))
+        self.assertEqual(self_worker_info.name, "worker{}".format(self.rank))
+        self.assertEqual(peer_worker_info.name, "worker{}".format(peer_rank))
 
         with self.assertRaisesRegex(RuntimeError, "Unknown destination worker"):
-            unknown_worker_id = dist.get_worker_id("WorkerUnknown")
+            unknown_worker_id = dist.get_worker_info("WorkerUnknown")
 
     @_wrap_with_rpc
     def test_self_add(self):
-        self_worker_id = dist.get_worker_id()
-        self_worker_name = "worker{}".format(self.rank)
+        self_worker_info = dist.get_worker_info()
+        self_worker_name = 'worker{}'.format(self.rank)
 
         with self.assertRaisesRegex(
             RuntimeError, "does not support making RPC calls to self"
         ):
-            dist.rpc_sync(self_worker_id, torch.add, args=(torch.ones(2, 2), 1))
+            dist.rpc_sync(
+                self_worker_info,
+                torch.add,
+                args=(torch.ones(2, 2), 1)
+            )
 
         with self.assertRaisesRegex(
             RuntimeError, "does not support making RPC calls to self"
         ):
-            dist.rpc_sync(self_worker_name, torch.add, args=(torch.ones(2, 2), 1))
+            dist.rpc_sync(
+                self_worker_name,
+                torch.add,
+                args=(torch.ones(2, 2), 1)
+            )
 
     @unittest.skipIf(
         BACKEND != RpcBackend.PROCESS_GROUP,
@@ -192,7 +239,7 @@ class RpcTest(object):
             dist.init_model_parallel(self_name="")
 
         # If the number in the message does not match, it is likely that the
-        # value of MAX_NAME_LEN in RPC WorkerId has changed.
+        # value of MAX_NAME_LEN in RPC WorkerInfo has changed.
         with self.assertRaisesRegex(RuntimeError, "shorter than 128"):
             dist.init_model_parallel(
                 self_name="".join(["a" for _ in range(500)]),
@@ -217,10 +264,10 @@ class RpcTest(object):
     def test_add_with_id(self):
         n = self.rank + 1
         dst_rank = n % self.world_size
-        workder_id = dist.get_worker_id("worker{}".format(dst_rank))
+        workder_info = dist.get_worker_info('worker{}'.format(dst_rank))
 
         ret = dist.rpc_sync(
-            workder_id, torch.add, args=(torch.ones(n, n), torch.ones(n, n))
+            workder_info, torch.add, args=(torch.ones(n, n), torch.ones(n, n))
         )
         self.assertEqual(ret, torch.ones(n, n) * 2)
 
@@ -362,9 +409,17 @@ class RpcTest(object):
     def test_py_multi_async_call(self):
         n = self.rank + 1
         dst_rank = n % self.world_size
-        dst_worker_id = dist.get_worker_id("worker{}".format(dst_rank))
-        fut1 = dist.rpc_async(dst_worker_id, my_class.my_static_method, args=(n + 10,))
-        fut2 = dist.rpc_async(dst_worker_id, min, args=(n, n + 1, n + 2))
+        dst_worker_info = dist.get_worker_info("worker{}".format(dst_rank))
+        fut1 = dist.rpc_async(
+            dst_worker_info,
+            my_class.my_static_method,
+            args=(n + 10,)
+        )
+        fut2 = dist.rpc_async(
+            dst_worker_info,
+            min,
+            args=(n, n + 1, n + 2)
+        )
         self.assertEqual(fut1.wait(), my_class.my_static_method(n + 10))
         self.assertEqual(fut2.wait(), min(n, n + 1, n + 2))
 
@@ -380,7 +435,11 @@ class RpcTest(object):
         n = self.rank + 1
         dst_rank = n % self.world_size
         with self.assertRaisesRegex(Exception, "TypeError"):
-            ret = dist.rpc_sync("worker{}".format(dst_rank), no_result, args=(10,))
+            ret = dist.rpc_sync(
+                "worker{}".format(dst_rank),
+                no_result,
+                args=(10,)
+            )
 
     @_wrap_with_rpc
     def test_py_raise_in_user_func(self):
@@ -440,8 +499,9 @@ class RpcTest(object):
         )
         self.assertEqual(rref.to_here(), torch.ones(n, n) * 2)
 
-    @_wrap_with_rpc
-    def test_multi_builtin_remote_ret(self):
+    def _test_multi_remote_call(
+        self, fn, args_fn=lambda x: (), kwargs_fn=lambda x: {}
+    ):
         m = 10
         n = self.rank + 1
         dst_rank = n % self.world_size
@@ -449,14 +509,221 @@ class RpcTest(object):
         expected = []
         for i in range(m):
             n = n + i
-            rrefs.append(
-                dist.remote(
-                    "worker{}".format(dst_rank),
-                    torch.add,
-                    args=(torch.ones(n, n), torch.ones(n, n)),
-                )
-            )
-            expected.append(torch.ones(n, n) * 2)
+            rrefs.append(dist.remote(
+                'worker{}'.format(dst_rank),
+                fn,
+                args=args_fn(n),
+                kwargs=kwargs_fn(n)
+            ))
+            expected.append(fn(*args_fn(n), **kwargs_fn(n)))
 
         for i in range(m):
             self.assertEqual(rrefs[i].to_here(), expected[i])
+
+    @_wrap_with_rpc
+    def test_multi_builtin_remote_ret(self):
+        def args_fn(n):
+            return (torch.ones(n, n), torch.ones(n, n))
+        self._test_multi_remote_call(torch.add, args_fn=args_fn)
+
+    @_wrap_with_rpc
+    def test_py_udf_remote(self):
+        n = self.rank + 1
+        dst_rank = n % self.world_size
+        rref = dist.remote(
+            "worker{}".format(dst_rank),
+            my_function,
+            kwargs={"a": n, "b": n + 1, "c": n + 2},
+        )
+        self.assertEqual(rref.to_here(), my_function(n, n + 1, n + 2))
+
+    @_wrap_with_rpc
+    def test_multi_py_udf_remote(self):
+        def kwargs_fn(n):
+            return {
+                "a" : torch.ones(n, n),
+                "b" : torch.ones(n, n),
+                "c" : torch.ones(n, n),
+            }
+        self._test_multi_remote_call(my_function, kwargs_fn=kwargs_fn)
+
+    @_wrap_with_rpc
+    def test_py_rref_args(self):
+        n = self.rank + 1
+        dst_rank = n % self.world_size
+        rref_a = dist.remote(
+            'worker{}'.format(dst_rank),
+            torch.add,
+            args=(torch.ones(n, n), 2)
+        )
+        rref_b = dist.remote(
+            'worker{}'.format(dst_rank),
+            torch.add,
+            args=(torch.ones(n, n), 1)
+        )
+        rref_c = dist.remote(
+            'worker{}'.format(dst_rank),
+            my_rref_function,
+            args=(rref_a, rref_b)
+        )
+        self.assertEqual(rref_c.to_here(), torch.ones(n, n) + 4)
+
+    @_wrap_with_rpc
+    def test_py_rref_args_user_share(self):
+        n = self.rank + 1
+        owner_rank = n % self.world_size
+        user_rank = (n + 1) % self.world_size
+        rref_a = dist.remote(
+            'worker{}'.format(owner_rank),
+            my_function,
+            args=(torch.ones(n, n), 2, 0)
+        )
+        rref_b = dist.remote(
+            'worker{}'.format(owner_rank),
+            my_function,
+            args=(torch.ones(n, n), 1, 0)
+        )
+        rref_c = dist.remote(
+            'worker{}'.format(user_rank),
+            my_rref_function,
+            args=(rref_a, rref_b)
+        )
+        self.assertEqual(rref_c.to_here(), torch.ones(n, n) + 4)
+
+
+    @_wrap_with_rpc
+    def test_py_rpc_rref_args(self):
+        n = self.rank + 1
+        dst_rank = n % self.world_size
+        rref_a = dist.remote(
+            'worker{}'.format(dst_rank),
+            my_function,
+            args=(torch.ones(n, n), 2, 0)
+        )
+        rref_b = dist.remote(
+            'worker{}'.format(dst_rank),
+            my_function,
+            args=(torch.ones(n, n), 1, 0)
+        )
+
+        c = dist.rpc(
+            'worker{}'.format(dst_rank),
+            my_rref_function,
+            args=(rref_a, rref_b)
+        )
+
+        self.assertEqual(c, torch.ones(n, n) + 4)
+
+    @_wrap_with_rpc
+    def test_nested_remote(self):
+        n = self.rank + 1
+        dst_rank1 = n % self.world_size
+        dst_rank2 = (n + 1) % self.world_size
+        rref = dist.remote(
+            'worker{}'.format(dst_rank1),
+            nested_remote,
+            args=('worker{}'.format(dst_rank2),)
+        )
+        self.assertEqual(rref.to_here(), torch.ones(2, 2) + 3)
+
+    @_wrap_with_rpc
+    def test_nested_rref(self):
+        n = self.rank + 1
+        dst_rank1 = n % self.world_size
+        dst_rank2 = (n + 1) % self.world_size
+        rref_of_rrefs = dist.remote(
+            'worker{}'.format(dst_rank1),
+            nested_rref,
+            args=('worker{}'.format(dst_rank2),)
+        )
+        rrefs = rref_of_rrefs.to_here()
+        self.assertEqual(len(rrefs), 2)
+        self.assertEqual(rrefs[0].to_here(), torch.ones(2, 2) + 1)
+        self.assertEqual(rrefs[1].to_here(), torch.ones(2, 2) + 2)
+
+    @_wrap_with_rpc
+    def test_nested_rref_stress(self):
+        n = self.rank + 1
+        dst_rank1 = n % self.world_size
+        dst_rank2 = (n + 1) % self.world_size
+        all_rrefs = []
+        for _ in range(20):
+            all_rrefs.append(
+                dist.remote(
+                    'worker{}'.format(dst_rank1),
+                    nested_rref,
+                    args=('worker{}'.format(dst_rank2),)
+                )
+            )
+
+        for i in range(20):
+            rref_of_rrefs = all_rrefs[i]
+            rrefs = rref_of_rrefs.to_here()
+            self.assertEqual(len(rrefs), 2)
+            self.assertEqual(rrefs[0].to_here(), torch.ones(2, 2) + 1)
+            self.assertEqual(rrefs[1].to_here(), torch.ones(2, 2) + 2)
+
+    @_wrap_with_rpc
+    def test_remote_with_exception(self):
+        n = self.rank + 1
+        dst_rank = n % self.world_size
+        rref = dist.remote(
+            "worker{}".format(dst_rank),
+            raise_func
+        )
+        with self.assertRaisesRegex(Exception, "ValueError"):
+            rref.to_here()
+
+    @_wrap_with_rpc
+    def test_rpc_return_rref(self):
+        n = self.rank + 1
+        dst_rank1 = n % self.world_size
+        dst_rank2 = (n + 1) % self.world_size
+        rref = dist.rpc(
+            'worker{}'.format(dst_rank1),
+            rpc_return_rref,
+            args=('worker{}'.format(dst_rank2),)
+        )
+        self.assertEqual(rref.to_here(), torch.ones(2, 2) + 1)
+
+    @_wrap_with_rpc
+    def test_rref_forward_chain(self):
+        ttl = 8
+        n = self.rank + 1
+        dst_rank = n % self.world_size
+
+        rref = dist.remote(
+            'worker{}'.format(dst_rank),
+            torch.add,
+            args=(torch.ones(n, n), 1)
+        )
+
+        ret_rref = rref_forward_chain(dst_rank, self.world_size, rref, ttl)
+
+        for i in range(ttl):
+            self.assertEqual(len(ret_rref), 1)
+            ret_rref = ret_rref[0].to_here()
+
+        ret = ret_rref
+        self.assertEqual(ret, torch.add(torch.ones(n, n), 1))
+
+    @_wrap_with_rpc
+    def test_remote_same_worker(self):
+        n = self.rank + 1
+        dst_rank = n % self.world_size
+        rref_a = dist.remote(
+            'worker{}'.format(dst_rank),
+            torch.add,
+            args=(torch.ones(n, n), 2)
+        )
+        rref_b = dist.remote(
+            'worker{}'.format(dst_rank),
+            torch.add,
+            args=(torch.ones(n, n), 1)
+        )
+        rref_c = dist.remote(
+            'worker{}'.format(dst_rank),
+            my_rref_function,
+            args=(rref_a, rref_b)
+        )
+        self.assertEqual(rref_c.to_here(), torch.ones(n, n) + 4)

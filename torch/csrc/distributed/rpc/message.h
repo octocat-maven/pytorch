@@ -8,18 +8,32 @@ namespace distributed {
 namespace rpc {
 
 enum MessageType {
+  // messages for dist.rpc on builtin operators
   SCRIPT_CALL = 0,
-  SCRIPT_RET,
-  PYTHON_CALL,
-  PYTHON_RET,
-  REMOTE_CALL,
-  RREF_FETCH_CALL,
-  RREF_FETCH_RET,
-  RREF_USER_CREATE,
-  RREF_USER_DELETE,
-  SHUTDOWN,
-  EXCEPTION,
-  UNKNOWN
+  SCRIPT_RET = 1,
+
+  // messages for dist.rpc on Python UDF
+  PYTHON_CALL = 2,
+  PYTHON_RET = 3,
+
+  // messages for dist.remote on builtin operators and Python UDF
+  SCRIPT_REMOTE_CALL = 4, // A remote call on a builtin operator
+  PYTHON_REMOTE_CALL = 5, // A remote call on a Python UDF
+  REMOTE_RET = 6, // A remote call on a Python UDF
+
+  // RRef related internal messages
+  SCRIPT_RREF_FETCH_CALL = 7, // A UserRRef<IValue> fetches value from owner
+  PYTHON_RREF_FETCH_CALL = 8, // A UserRRef<py::object> fetches value from owner
+  RREF_FETCH_RET = 9, // An OwnerRRef sends value to user
+  RREF_USER_DELETE = 10, // A UserRRef tells the owner to deref
+  RREF_FORK_REQUEST = 11, // A child UserRRef tells the owner about itself
+  RREF_CHILD_ACCEPT = 12, // A child UserRRef tells parent that owner knows it
+
+  // Other internal message types
+  SHUTDOWN = 13,
+  EXCEPTION = 14,
+  ACK = 15,
+  UNKNOWN = 16
 };
 
 // A message to be sent/received by an RpcAgent.
@@ -67,8 +81,10 @@ class TORCH_API Message final {
   const MessageType& type() const;
 
   bool isRequest() const;
-  bool requiresResponse() const;
   bool isResponse() const;
+  // Internal messages does not contain any UDF, and their request/response
+  // callbacks should be idempotent and retryable.
+  bool isInternal() const;
   bool isShutdown() const;
 
   // id is an optional field to match request/response. If an RpcAgent
