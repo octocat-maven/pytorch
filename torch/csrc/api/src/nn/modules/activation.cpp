@@ -38,5 +38,26 @@ void HardshrinkImpl::pretty_print(std::ostream& stream) const {
          << "torch::nn::Hardshrink(" << options.lambda() << ")";
 }
 
+// ============================================================================
+
+HardtanhImpl::HardtanhImpl(const HardtanhOptions& options_)
+    : options(options_) {}
+
+Tensor HardtanhImpl::forward(Tensor& input) {
+  return F::hardtanh(input, options);
+}
+
+void HardtanhImpl::reset() {}
+
+void HardtanhImpl::pretty_print(std::ostream& stream) const {
+  stream << std::boolalpha
+         << "torch::nn::Hardtanh(min_val=" << options.min_val()
+         << ", max_val=" << options.max_val();
+  if (options.inplace()) {
+    stream << std::boolalpha  << ", inplace=" << options.inplace();
+  }
+  stream << ")";
+}
+
 } // namespace nn
 } // namespace torch
